@@ -40,7 +40,8 @@
                 "chat:write",
                 "users.profile:write",
                 "channels:write.invites",
-                "groups:write.invites"
+                "groups:write.invites",
+                "im:read"
             ],
             "bot": [
                 "channels:history",

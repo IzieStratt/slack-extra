@@ -1,13 +1,37 @@
 from slack_bolt.async_app import AsyncAck
 from slack_bolt.async_app import AsyncRespond
+from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
+from slack_extra.datastore import PiccoloInstallationStore
+from slack_extra.utils.oauth import generate_oauth_url
 from slack_extra.utils.slack import get_channel_managers
 
 
 HACKATIME_ENDPOINT = "https://hackatime.hackclub.com/api/v1/users/slackid/trust_factor"
 IDENTITY_ENDPOINT = "https://identity.hackclub.com/api/external/check"
 JOE_ENDPOINT = "https://joe.fraud.hackclub.com/profile/"
+
+
+async def get_dm_partner(client: AsyncWebClient, performer: str, dm: str) -> str | None:
+    """Resolve the other user in a 1:1 DM using the performer's user token."""
+    team_info = await client.team_info()
+    team_id = team_info.get("team", {}).get("id") or "T0266FRGM"
+
+    installation = await PiccoloInstallationStore().async_find_installation(
+        enterprise_id=None, team_id=team_id, user_id=performer
+    )
+    if not installation or not installation.user_token:
+        return None
+
+    try:
+        dm_info = await client.conversations_info(
+            channel=dm, token=installation.user_token
+        )
+    except SlackApiError:
+        # most likely missing_scope from a token authorised before im:read
+        return None
+    return dm_info.get("channel", {}).get("user")
 
 
 async def info_handler(
@@ -24,6 +48,17 @@ async def info_handler(
     from slack_extra.env import env
 
     res = "Oops, something went wrong."
+
+    if not user and not email and not channel and location.startswith("D"):
+        # the bot isn't in 1:1 DMs, so look up the other person as the performer
+        user = await get_dm_partner(client, performer, location)
+        if not user:
+            oauth_url = await generate_oauth_url(user_scopes=["im:read"])
+            await respond(
+                f"Click here to authorise: <{oauth_url}|Authorise App>\n\n"
+                f"_This will grant the app permission to see who this DM is with using the `im:read` scope._"
+            )
+            return
 
     channel = location if not channel else channel
 
