@@ -11,6 +11,7 @@ from slack_extra.utils.slack import get_channel_managers
 HACKATIME_ENDPOINT = "https://hackatime.hackclub.com/api/v1/users/slackid/trust_factor"
 IDENTITY_ENDPOINT = "https://identity.hackclub.com/api/external/check"
 JOE_ENDPOINT = "https://joe.fraud.hackclub.com/profile/"
+NDA_ENDPOINT = "https://nda.hackclub.com/api/v1/nda_status/"
 
 
 async def get_dm_partner(client: AsyncWebClient, performer: str, dm: str) -> str | None:
@@ -131,25 +132,31 @@ async def info_handler(
                         else:
                             res += "- :bust_in_silhouette: *IDV:- N/A\n"
 
-        # if email:
-        #     api = Api(api_key=config.airtable.nda.api_key)
-        #     table = api.table(config.airtable.nda.base_id, config.airtable.nda.table_id)
-        #     nda_records = table.all(
-        #         formula=f"{{Email}} = '{email}'",
-        #         fields=["Email", "Signed?"],
-        #     )
-        #     if nda_records:
-        #         record_url = ""
-        #         for record in nda_records:
-        #             record_url = f"https://airtable.com/{config.airtable.nda.base_id}/{config.airtable.nda.table_id}/{record.get('id')}"
-        #             signed = record.get("fields", {}).get("Signed?", False)
-        #             if signed:
-        #                 res += f"- :tw_shield: *NDA Signed:* Yes _(<{record_url}|View on Airtable>)_\n"
-        #                 break
-        #         else:
-        #             res += f"- :tw_shield: *NDA Signed:* Sent but not signed _(<{record_url}|View on Airtable>)_\n"
-        #     else:
-        #         res += "- :tw_shield: *NDA Signed:* No record found\n"
+        if user:
+            # https://nda.hackclub.com/api/v1/docs - public, keyed on Slack ID
+            try:
+                async with env.http.get(NDA_ENDPOINT + user) as nda_resp:
+                    if nda_resp.status == 200:
+                        nda_data = await nda_resp.json()
+                        version = nda_data.get("nda_version", "unknown")
+                        if nda_data.get("status") == "signed":
+                            signed_at = nda_data.get("signed_at", "")
+                            details = f"v{version}"
+                            if signed_at:
+                                details += f", signed {signed_at[:10]}"
+                            if nda_data.get("signature_type") == "legacy":
+                                details += ", imported"
+                            res += f"- :tw_shield: *NDA Signed:* Yes _({details})_\n"
+                        else:
+                            res += f"- :tw_shield: *NDA Signed:* No _(current v{version})_\n"
+                    elif nda_resp.status == 400:
+                        res += "- :tw_shield: *NDA Signed:* N/A _(invalid Slack ID)_\n"
+                    elif nda_resp.status == 429:
+                        res += "- :tw_shield: *NDA Signed:* N/A _(rate limited, try again shortly)_\n"
+                    else:
+                        res += "- :tw_shield: *NDA Signed:* N/A\n"
+            except Exception:
+                res += "- :tw_shield: *NDA Signed:* N/A\n"
 
     elif channel:
         res = f"*Channel Info for <#{channel}>:*\n"
