@@ -108,6 +108,8 @@ class Client:
         self.fail_delete = None
         self.fail_unpin = None
         self.fail_pin = False
+        self.fail_post = False
+        self.notifications = []
 
     async def pins_remove(self, channel, timestamp, token):
         self.calls.append(("unpin", channel, timestamp, token))
@@ -128,6 +130,11 @@ class Client:
         self.next_ts += 1
         ts = str(self.next_ts)
         self.calls.append(("post", channel, ts))
+        if channel not in self.messages:
+            self.notifications.append((channel, kwargs["text"]))
+            return {"ts": ts}
+        if self.fail_post:
+            raise SlackApiError("error", {"error": "ratelimited"})
         self.messages[channel].add(ts)
         await asyncio.sleep(0)
         return {"ts": ts}
@@ -236,11 +243,8 @@ class AnchorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(failed_ts, self.client.messages["C"])
         self.assertEqual(self.client.messages["C"], {self.records["C"].message_ts})
 
-    async def test_modal_edit_shares_lock_and_uses_previous_owner(self):
-        self.client.block_delete = True
-        event = asyncio.create_task(self.event())
-        await self.client.first_delete.wait()
-        body = {
+    def modal_body(self):
+        return {
             "user": {"id": "new-owner"},
             "view": {
                 "private_metadata": "C|edit",
@@ -255,6 +259,50 @@ class AnchorTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         }
+
+    async def test_modal_post_failure_preserves_old_anchor_and_reports_error(self):
+        self.client.fail_post = True
+        original = vars(self.records["C"]).copy()
+        ack = AsyncMock()
+        await modal.configure_anchor_handler(ack, self.modal_body(), self.client)
+        ack.assert_awaited_once()
+        self.assertEqual(vars(self.records["C"]), original)
+        self.assertEqual(self.client.messages["C"], {"old"})
+        self.assertEqual(self.client.pins["C"], {"old"})
+        self.assertFalse(
+            any(c[0] in ("unpin", "delete", "pin") for c in self.client.calls)
+        )
+        self.assertEqual(self.client.notifications[0][0], "new-owner")
+        self.assertIn("could not be posted", self.client.notifications[0][1])
+
+    async def test_modal_posts_before_removing_old_anchor(self):
+        await modal.configure_anchor_handler(
+            AsyncMock(), self.modal_body(), self.client
+        )
+        self.assertEqual(
+            [c[0] for c in self.client.calls], ["post", "unpin", "delete", "pin"]
+        )
+        self.assertEqual(self.client.messages["C"], {self.records["C"].message_ts})
+        self.assertEqual(self.client.pins["C"], {self.records["C"].message_ts})
+
+    async def test_modal_cleanup_failure_removes_replacement_without_updating_config(
+        self,
+    ):
+        self.client.fail_unpin = "missing_scope"
+        original = vars(self.records["C"]).copy()
+        await modal.configure_anchor_handler(
+            AsyncMock(), self.modal_body(), self.client
+        )
+        self.assertEqual(vars(self.records["C"]), original)
+        self.assertFalse(any(c[0] == "pin" for c in self.client.calls))
+        self.assertEqual(self.client.notifications[0][0], "new-owner")
+        self.assertIn("could not be removed", self.client.notifications[0][1])
+
+    async def test_modal_edit_shares_lock_and_uses_previous_owner(self):
+        self.client.block_delete = True
+        event = asyncio.create_task(self.event())
+        await self.client.first_delete.wait()
+        body = self.modal_body()
         edit = asyncio.create_task(
             modal.configure_anchor_handler(AsyncMock(), body, self.client)
         )
