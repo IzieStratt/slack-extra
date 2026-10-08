@@ -1,4 +1,5 @@
 from slack_bolt.async_app import AsyncAck
+from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 from slack_extra.config import config
@@ -64,28 +65,39 @@ async def configure_anchor_handler(ack: AsyncAck, body: dict, client: AsyncWebCl
                 and "pins:write" in previous_installation.user_scopes
                 else config.slack.bot_token
             )
-            if not await remove_anchor(
-                client,
-                channel,
-                anchor_config.message_ts,
-                previous_installation.user_token,
-                previous_pin_token,
-            ):
-                return
 
-        msg = await client.chat_postMessage(
-            channel=channel,
-            blocks=[rich_text_value],
-            metadata={
-                "event_type": "anchor",
-                "event_payload": {
-                    "channel": channel,
+        try:
+            msg = await client.chat_postMessage(
+                channel=channel,
+                blocks=[rich_text_value],
+                metadata={
+                    "event_type": "anchor",
+                    "event_payload": {"channel": channel},
                 },
-            },
-            token=user_token,
-            unfurl_links=True,
-            unfurl_media=True,
-        )
+                token=user_token,
+                unfurl_links=True,
+                unfurl_media=True,
+            )
+        except SlackApiError:
+            await client.chat_postMessage(
+                channel=user_id,
+                text="The new anchor could not be posted. The existing anchor has not been changed. Please try again.",
+            )
+            return
+
+        if anchor_config and not await remove_anchor(
+            client,
+            channel,
+            anchor_config.message_ts,
+            previous_installation.user_token,
+            previous_pin_token,
+        ):
+            await remove_anchor(client, channel, msg["ts"], user_token, pin_token)
+            await client.chat_postMessage(
+                channel=user_id,
+                text="The previous anchor could not be removed, so the anchor configuration has not been changed. Please contact the app maintainer.",
+            )
+            return
 
         if anchor_config:
             await anchor_config.update(
