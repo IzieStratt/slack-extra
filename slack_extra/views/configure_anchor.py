@@ -99,23 +99,31 @@ async def configure_anchor_handler(ack: AsyncAck, body: dict, client: AsyncWebCl
             )
             return
 
-        if anchor_config:
-            await anchor_config.update(
-                {
-                    AnchorConfig.message: rich_text_value,
-                    AnchorConfig.message_ts: msg["ts"],
-                    AnchorConfig.user_id: user_id,
-                    AnchorConfig.enabled: True,
-                }
-            ).where(AnchorConfig.channel_id == channel)
-        else:
-            anchor_config = AnchorConfig(
-                channel_id=channel,
-                message=rich_text_value,
-                enabled=True,
-                message_ts=msg["ts"],
-                user_id=user_id,
+        try:
+            if anchor_config:
+                await anchor_config.update(
+                    {
+                        AnchorConfig.message: rich_text_value,
+                        AnchorConfig.message_ts: msg["ts"],
+                        AnchorConfig.user_id: user_id,
+                        AnchorConfig.enabled: True,
+                    }
+                ).where(AnchorConfig.channel_id == channel)
+            else:
+                anchor_config = AnchorConfig(
+                    channel_id=channel,
+                    message=rich_text_value,
+                    enabled=True,
+                    message_ts=msg["ts"],
+                    user_id=user_id,
+                )
+                await AnchorConfig.insert(anchor_config)
+        except Exception:
+            await remove_anchor(client, channel, msg["ts"], user_token, pin_token)
+            await client.chat_postMessage(
+                channel=user_id,
+                text="The anchor configuration could not be saved, so the new anchor was removed. Please try again.",
             )
-            await AnchorConfig.insert(anchor_config)
+            raise
 
         await client.pins_add(channel=channel, timestamp=msg["ts"], token=pin_token)

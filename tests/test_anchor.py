@@ -298,6 +298,24 @@ class AnchorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.notifications[0][0], "new-owner")
         self.assertIn("could not be removed", self.client.notifications[0][1])
 
+    async def test_modal_config_save_failure_removes_replacement_and_reports_error(
+        self,
+    ):
+        class Update:
+            async def where(self, channel):
+                raise RuntimeError("db down")
+
+        self.table.update = lambda values: Update()
+        with self.assertRaises(RuntimeError):
+            await modal.configure_anchor_handler(
+                AsyncMock(), self.modal_body(), self.client
+            )
+        # The replacement is cleaned up so no unrecorded anchor is left behind.
+        self.assertEqual(self.client.messages["C"], set())
+        self.assertEqual(self.client.pins["C"], set())
+        self.assertEqual(self.client.notifications[0][0], "new-owner")
+        self.assertIn("could not be saved", self.client.notifications[0][1])
+
     async def test_modal_edit_shares_lock_and_uses_previous_owner(self):
         self.client.block_delete = True
         event = asyncio.create_task(self.event())
